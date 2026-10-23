@@ -16,6 +16,7 @@ struct WindowInfo: Identifiable, Hashable {
     var isFullscreenSpace: Bool = false
     var isWindowless: Bool = false
     var bundleID: String?
+    var hasNotification: Bool = false
 }
 
 enum WindowEnumerator {
@@ -37,6 +38,42 @@ enum WindowEnumerator {
 
     private static func isHelperProcess(_ name: String) -> Bool {
         for s in helperSuffixes where name.hasSuffix(s) { return true }
+        return false
+    }
+
+    /// Build a set of bundle IDs that have delivered notifications.
+    /// Called once per enumeration pass to avoid O(windows × notifications)
+    /// iteration inside the window loop.
+    private static func deliveredNotificationBundleIDs() -> Set<String> {
+        let notifications = NSUserNotificationCenter.default.deliveredNotifications
+        guard !notifications.isEmpty else { return [] }
+        var result: Set<String> = []
+        for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
+            guard let bundleID = app.bundleIdentifier else { continue }
+            if notifications.contains(where: { $0.identifier.hasPrefix(bundleID) }) {
+                result.insert(bundleID)
+            }
+        }
+        return result
+    }
+
+    /// Check if an app has pending notifications by checking its dock badge
+    /// or looking up pre-computed delivered notification bundle IDs.
+    private static func appHasNotification(_ app: NSRunningApplication?, notificationBundleIDs: Set<String>) -> Bool {
+        guard let app = app else { return false }
+
+        // Check dock tile badge (most reliable indicator)
+        if #available(macOS 11.0, *) {
+            if app.dockTile.badgeLabel != nil {
+                return true
+            }
+        }
+
+        // O(1) lookup in pre-computed set
+        if let bundleID = app.bundleIdentifier {
+            return notificationBundleIDs.contains(bundleID)
+        }
+
         return false
     }
 
@@ -315,6 +352,8 @@ enum WindowEnumerator {
             let suffix = sorted.count == 1 ? "1 window" : "\(sorted.count) windows"
             let detail = apps.isEmpty ? suffix : "\(suffix) · \(apps.joined(separator: ", "))"
             let info = metadata.labels[sid]
+            // Check if any window in this space has notifications
+            let hasNotification = sorted.contains { $0.hasNotification }
             return WindowInfo(
                 id: target.id,
                 pid: target.pid,
@@ -328,7 +367,8 @@ enum WindowEnumerator {
                 spaceLabel: sid == active ? "Current" : nil,
                 isFullscreenSpace: info?.isFullscreen ?? false,
                 isWindowless: false,
-                bundleID: target.bundleID
+                bundleID: target.bundleID,
+                hasNotification: hasNotification
             )
         }
     }
@@ -373,6 +413,10 @@ enum WindowEnumerator {
                 }
             }
         }
+        // Build notification bundle ID set once — avoids O(windows × notifications) iteration.
+        let notificationBundleIDs = deliveredNotificationBundleIDs()
+        // Per-PID cache: same app = same notification state, skip redundant dock badge checks.
+        var notificationCache: [pid_t: Bool] = [:]
         var out: [WindowInfo] = []
         var seenIDs: Set<CGWindowID> = []
         let titlesReliable = CGPreflightScreenCaptureAccess()
@@ -407,6 +451,14 @@ enum WindowEnumerator {
             // Chrome windows that shared the same active-tab title.
             if seenIDs.contains(id) { continue }
             seenIDs.insert(id)
+            let hasNotification: Bool
+            if let cached = notificationCache[pid] {
+                hasNotification = cached
+            } else {
+                let result = appHasNotification(app, notificationBundleIDs: notificationBundleIDs)
+                notificationCache[pid] = result
+                hasNotification = result
+            }
             out.append(WindowInfo(
                 id: id,
                 pid: pid,
@@ -414,7 +466,8 @@ enum WindowEnumerator {
                 bounds: bounds,
                 title: title,
                 isHidden: app?.isHidden == true,
-                bundleID: app?.bundleIdentifier
+                bundleID: app?.bundleIdentifier,
+                hasNotification: hasNotification
             ))
         }
         return out

@@ -54,6 +54,18 @@ struct SwitchView: View {
         }
     }
 
+    @ViewBuilder
+    private func notificationBadge(for window: WindowInfo) -> some View {
+        if window.hasNotification {
+            Image(systemName: "bell.badge.fill")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.white)
+                .padding(4)
+                .background(Color.red.opacity(0.85))
+                .clipShape(Circle())
+        }
+    }
+
     private func capsuleBadge(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 9, weight: .semibold))
@@ -358,8 +370,13 @@ struct SwitchView: View {
                     }
                 }
                 .overlay(alignment: .topTrailing) {
-                    if !window.isWindowless && (isPinned(window) || hovered) {
-                        pinButton(for: window).padding(7)
+                    HStack(spacing: 4) {
+                        if window.hasNotification {
+                            notificationBadge(for: window).padding(7)
+                        }
+                        if !window.isWindowless && (isPinned(window) || hovered) {
+                            pinButton(for: window).padding(7)
+                        }
                     }
                 }
                 .animation(switcherAnimation(.easeOut(duration: 0.18)), value: model.thumbnails[window.id] != nil)
@@ -442,6 +459,10 @@ struct SwitchView: View {
                 }
             }
             Spacer(minLength: 6)
+            if window.hasNotification {
+                notificationBadge(for: window)
+                    .opacity(hovered ? 1 : 0.8)
+            }
             if !isSpaceMode && prefs.showStoplights && prefs.verticalShowStoplights && !window.isWindowless {
                 stoplights(for: window)
                     .opacity(hovered ? 1 : 0.45)
